@@ -60,6 +60,6 @@ modules:
       - type: file
         url: https://cdn.devolutions.net/download/Linux/RDM/2026.1.2.5/RemoteDesktopManager_2026.1.2.5_arm64.deb
         dest-filename: RemoteDesktopManager.deb
-        sha256: 118f708430e84340cb111ed17f4c722ebe3ae0f07b074ed9ef1d5fd4608174ec
+        sha256: c3418b633c67219c9feab03ebac44af404177d81f620c2260447d38f7f72c1b0
         only-arches:
           - aarch64
