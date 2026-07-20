@@ -1,0 +1,106 @@
+name: build and publish
+run-name: "[publish] - flatpak ${{ inputs.variant }} on ${{ github.ref_name }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: Release channel to build and publish
+        required: true
+        type: choice
+        options:
+          - current
+          - em
+
+env:
+  CDN_BASE_URL: https://cdn.devolutions.net/flatpak
+  GPG_FINGERPRINT: 371E14A2EB5B3E6825D1FF2D8E63023A9A936E55
+  MANIFEST: com.devolutions.remotedesktopmanager.${{ inputs.variant }}.yml
+  STORAGE_ACCOUNT: cdndevolutions
+  STORAGE_CONTAINER: flatpak
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-publish:
+    concurrency: publish-flatpak-${{ inputs.variant }}
+    environment: publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Checkout actions
+        uses: actions/checkout@v6
+        with:
+          ref: v1
+          repository: Devolutions/actions
+          token: ${{ secrets.DEVOLUTIONSBOT_TOKEN }}
+          path: ./.github/workflows
+
+      - name: Install flatpak tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder qemu-user-static
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+
+      - name: Import GPG signing key
+        run: |
+          GNUPGHOME="$RUNNER_TEMP/gnupg"
+          mkdir -p "$GNUPGHOME"
+          chmod 700 "$GNUPGHOME"
+          echo "$FLATPAK_GPG_PRIVATE_KEY" | base64 --decode | gpg --homedir "$GNUPGHOME" --batch --import
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+        env:
+          FLATPAK_GPG_PRIVATE_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
+
+      - name: Build and export
+        run: |
+          for arch in x86_64 aarch64; do
+            flatpak-builder --user --install-deps-from=flathub --force-clean --disable-rofiles-fuse \
+              --arch="$arch" --gpg-sign="$GPG_FINGERPRINT" --gpg-homedir="$GNUPGHOME" \
+              --repo=repo "build-dir-$arch" "$MANIFEST"
+          done
+
+      - name: Update and sign repo
+        run: flatpak build-update-repo --gpg-sign="$GPG_FINGERPRINT" --gpg-homedir="$GNUPGHOME" --generate-static-deltas repo
+
+      - name: Stage repo for upload
+        run: |
+          rm -rf publish
+          mkdir -p publish
+          mv repo publish/repo
+
+      - name: Azure login
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+
+      - name: Upload repo to storage account
+        uses: ./.github/workflows/azure-storage-blob-upload
+        with:
+          container: ${{ env.STORAGE_CONTAINER }}
+          folder: publish
+          storage_account: ${{ env.STORAGE_ACCOUNT }}
+
+      - name: Install toolbox
+        uses: ./.github/workflows/toolbox-install
+        with:
+          github_token: ${{ secrets.DEVOLUTIONSBOT_TOKEN }}
+
+      - name: Purge CDN cache
+        run: |
+          dv cloudflare purge "$CDN_BASE_URL/repo/summary" "$CDN_BASE_URL/repo/summary.sig" "$CDN_BASE_URL/repo/summary.idx" -m files -z "$ZONE_ID"
+          dv cloudflare purge "${CDN_BASE_URL#https://}/repo/appstream/" -m prefixes -z "$ZONE_ID"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ZONE_ID: ff15bff848faa16b687722346842bd43 # devolutions.net
