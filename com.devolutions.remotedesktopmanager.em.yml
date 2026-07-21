@@ -1,5 +1,5 @@
 app-id: com.devolutions.remotedesktopmanager
-branch: 'lts'
+branch: 'extended-maintenance'
 runtime: org.gnome.Platform
 runtime-version: '49'
 sdk: org.gnome.Sdk
