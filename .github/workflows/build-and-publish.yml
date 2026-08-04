@@ -11,6 +11,11 @@ on:
         options:
           - current
           - em
+      bootstrap_repo:
+        default: false
+        description: Create new repo (first run / disaster recovery)
+        required: false
+        type: boolean
 
 env:
   CDN_BASE_URL: https://cdn.devolutions.net/flatpak
@@ -24,7 +29,7 @@ permissions:
 
 jobs:
   build-and-publish:
-    concurrency: publish-flatpak-${{ inputs.variant }}
+    concurrency: publish-flatpak
     environment: publish
     runs-on: ubuntu-24.04
     permissions:
@@ -61,6 +66,35 @@ jobs:
         env:
           FLATPAK_GPG_PRIVATE_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
 
+      - name: Azure login
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+
+      - name: Download existing repo
+        run: |
+          az storage blob download-batch \
+            --auth-mode login \
+            --account-name "$STORAGE_ACCOUNT" \
+            --source "$STORAGE_CONTAINER" \
+            --destination . \
+            --pattern 'repo/*' \
+            --validate-content \
+            --no-progress
+          if [ ! -f repo/config ]; then
+            if [ "$BOOTSTRAP_REPO" = "true" ]; then
+              echo "No existing repo found; a new one will be created."
+              rm -rf repo
+            else
+              echo "::error::No existing repo found on the CDN; publishing would drop the other channel. Re-run with bootstrap_repo=true if this is intentional."
+              exit 1
+            fi
+          fi
+        env:
+          BOOTSTRAP_REPO: ${{ inputs.bootstrap_repo }}
+
       - name: Build and export
         run: |
           for arch in x86_64 aarch64; do
@@ -74,11 +108,22 @@ jobs:
 
       - name: Stage repo for upload
         run: |
-          rm -rf publish
-          mkdir -p publish
+          rm -rf publish publish-summary
+          mkdir -p publish publish-summary/repo
           mv repo publish/repo
+          for file in summary summary.sig; do
+            if [ ! -f "publish/repo/$file" ]; then
+              echo "::error::publish/repo/$file is missing; build-update-repo should always produce it."
+              exit 1
+            fi
+            mv "publish/repo/$file" publish-summary/repo/
+          done
+          if [ -f publish/repo/summary.idx ]; then
+            mv publish/repo/summary.idx publish-summary/repo/
+          fi
 
-      - name: Azure login
+      # Login again to Azure before uploading, as the previous login may have expired
+      - name: Azure login for upload
         uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -90,6 +135,14 @@ jobs:
         with:
           container: ${{ env.STORAGE_CONTAINER }}
           folder: publish
+          storage_account: ${{ env.STORAGE_ACCOUNT }}
+
+      # Upload the summary files separately to ensure that the repo is fully uploaded before the update is made available to clients.
+      - name: Upload repo summary
+        uses: ./.github/workflows/azure-storage-blob-upload
+        with:
+          container: ${{ env.STORAGE_CONTAINER }}
+          folder: publish-summary
           storage_account: ${{ env.STORAGE_ACCOUNT }}
 
       - name: Install toolbox
