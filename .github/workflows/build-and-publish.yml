@@ -28,13 +28,16 @@ permissions:
   contents: read
 
 jobs:
-  build-and-publish:
-    concurrency: publish-flatpak
+  build:
     environment: publish
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      id-token: write
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
 
     steps:
       - name: Checkout
@@ -42,6 +45,52 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Install flatpak tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+
+      - name: Import GPG signing key
+        run: |
+          GNUPGHOME="$RUNNER_TEMP/gnupg"
+          mkdir -p "$GNUPGHOME"
+          chmod 700 "$GNUPGHOME"
+          echo "$FLATPAK_GPG_PRIVATE_KEY" | base64 --decode | gpg --homedir "$GNUPGHOME" --batch --import
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+        env:
+          FLATPAK_GPG_PRIVATE_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
+
+      - name: Build and export
+        run: |
+          flatpak-builder --user --install-deps-from=flathub --force-clean --disable-rofiles-fuse \
+            --arch="$ARCH" --gpg-sign="$GPG_FINGERPRINT" --gpg-homedir="$GNUPGHOME" \
+            --repo=build-repo build-dir "$MANIFEST"
+        env:
+          ARCH: ${{ matrix.arch }}
+
+      # Tar keeps permissions and avoids zipping thousands of small OSTree objects; compression-level 0 since they are already gzip-compressed.
+      - name: Pack repo for hand-off
+        run: tar -cf build-repo.tar build-repo
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          compression-level: 0
+          name: build-repo-${{ matrix.arch }}
+          path: build-repo.tar
+          retention-days: 1
+
+  publish:
+    concurrency: publish-flatpak
+    environment: publish
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
       - name: Checkout actions
         uses: actions/checkout@v6
         with:
@@ -53,8 +102,7 @@ jobs:
       - name: Install flatpak tooling
         run: |
           sudo apt-get update
-          sudo apt-get install -y flatpak flatpak-builder qemu-user-static
-          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          sudo apt-get install -y --no-install-recommends flatpak ostree
 
       - name: Import GPG signing key
         run: |
@@ -73,7 +121,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
 
-      - name: Download existing repo
+      - name: Prepare local repo
         run: |
           az storage blob download-batch \
             --auth-mode login \
@@ -81,26 +129,33 @@ jobs:
             --source "$STORAGE_CONTAINER" \
             --destination . \
             --pattern 'repo/*' \
-            --validate-content \
             --no-progress
           if [ ! -f repo/config ]; then
             if [ "$BOOTSTRAP_REPO" = "true" ]; then
-              echo "No existing repo found; a new one will be created."
+              echo "No existing repo found; creating a new one."
               rm -rf repo
+              ostree init --repo=repo --mode=archive-z2
             else
               echo "::error::No existing repo found on the CDN; publishing would drop the other channel. Re-run with bootstrap_repo=true if this is intentional."
               exit 1
             fi
           fi
+          # Blob storage does not persist empty directories; restore the skeleton ostree expects.
+          mkdir -p repo/extensions repo/refs/heads repo/refs/mirrors repo/refs/remotes repo/state repo/tmp/cache
         env:
           BOOTSTRAP_REPO: ${{ inputs.bootstrap_repo }}
 
-      - name: Build and export
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          pattern: build-repo-*
+
+      - name: Merge builds into repo
         run: |
-          for arch in x86_64 aarch64; do
-            flatpak-builder --user --install-deps-from=flathub --force-clean --disable-rofiles-fuse \
-              --arch="$arch" --gpg-sign="$GPG_FINGERPRINT" --gpg-homedir="$GNUPGHOME" \
-              --repo=repo "build-dir-$arch" "$MANIFEST"
+          for dir in artifacts/build-repo-*; do
+            tar -xf "$dir/build-repo.tar" -C "$dir"
+            ostree pull-local --repo=repo "$dir/build-repo"
           done
 
       - name: Update and sign repo
