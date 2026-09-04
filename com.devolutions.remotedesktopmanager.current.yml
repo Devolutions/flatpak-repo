@@ -8,7 +8,7 @@ tags:
   - proprietary
 finish-args:
   - --share=ipc
-  - --device=dri
+  - --device=all
   - --socket=x11
   - --socket=pulseaudio
   - --socket=ssh-auth
@@ -21,6 +21,36 @@ finish-args:
   - --env=SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 modules:
   - shared-modules/libappindicator/libappindicator-gtk3-12.10.json
+  - name: libcbor
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DBUILD_SHARED_LIBS=ON
+      - -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+      - -DWITH_EXAMPLES=OFF
+    cleanup:
+      - /include
+      - /lib/pkgconfig
+      - '*.a'
+    sources:
+      - type: archive
+        url: https://github.com/PJK/libcbor/archive/v0.14.0/libcbor-0.14.0.tar.gz
+        sha256: a8c1516e741562cf95aa4479c64916c3d4d2623e24fdc35e414e2320e7300aae
+  - name: libfido2
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DBUILD_STATIC_LIBS=OFF
+      - -DBUILD_EXAMPLES=OFF
+      - -DBUILD_MANPAGES=OFF
+      - -DBUILD_TESTS=OFF
+      - -DBUILD_TOOLS=OFF
+    cleanup:
+      - /include
+      - /lib/pkgconfig
+      - '*.a'
+    sources:
+      - type: archive
+        url: https://developers.yubico.com/libfido2/Releases/libfido2-1.17.0.tar.gz
+        sha256: c1012c8871d71b65872fd5ff1a9d6b0838a55683a03e85ba97479ce57129c736
   - name: xdotool
     no-autogen: true
     make-args:
