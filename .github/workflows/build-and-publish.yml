@@ -102,7 +102,7 @@ jobs:
       - name: Install flatpak tooling
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends flatpak ostree
+          sudo apt-get install -y --no-install-recommends flatpak ostree libcbor-dev
 
       - name: Import GPG signing key
         run: |
