@@ -78,7 +78,6 @@ modules:
     build-commands:
       - ar x RemoteDesktopManager.deb
       - tar -xf data.tar.xz
-      - rm usr/lib/devolutions/RemoteDesktopManager/libWebView-4.0.so
       - cp -r usr/* ${FLATPAK_DEST}/
       - install -D bin/remotedesktopmanager ${FLATPAK_DEST}/bin/remotedesktopmanager
     sources:
